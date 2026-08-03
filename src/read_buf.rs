@@ -3,9 +3,15 @@ use std::mem::align_of;
 use crate::ll::fuse_abi as abi;
 use crate::session::MAX_WRITE_SIZE;
 
-/// Size of the buffer for reading a request from the kernel. Since the kernel may send
-/// up to `MAX_WRITE_SIZE` bytes in a write request, we use that value plus some extra space.
-const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
+/// Extra space added on top of the maximum write size when sizing a receive buffer:
+/// enough for the request header/opcode plus alignment slack.
+pub(crate) const BUFFER_HEADER_SLACK: usize = 4096;
+
+/// Default size of the buffer for reading a request from the kernel. Since the kernel may
+/// send up to `MAX_WRITE_SIZE` bytes in a write request, we use that value plus some extra
+/// space. Callers may request a smaller buffer via `Config::read_buffer_size`, in which case
+/// the negotiated `max_write` is clamped down to fit.
+pub(crate) const DEFAULT_BUFFER_SIZE: usize = MAX_WRITE_SIZE + BUFFER_HEADER_SLACK;
 
 /// A buffer that provides an aligned sub-slice for FUSE operations.
 ///
@@ -17,12 +23,14 @@ pub(crate) struct FuseReadBuf {
 }
 
 impl FuseReadBuf {
-    /// Creates a new `FuseReadBuf` with the default buffer size.
+    /// Creates a new `FuseReadBuf` holding `size` bytes.
     ///
-    /// The actual buffer may be slightly larger to accommodate alignment requirements.
-    pub(crate) fn new() -> Self {
+    /// `size` must be at least the negotiated `max_write` plus [`BUFFER_HEADER_SLACK`]. The
+    /// usable region returned by [`FuseReadBuf::as_mut`] may be slightly smaller to
+    /// accommodate alignment requirements.
+    pub(crate) fn new(size: usize) -> Self {
         Self {
-            buffer: vec![0; BUFFER_SIZE],
+            buffer: vec![0; size],
         }
     }
 

@@ -43,7 +43,7 @@ use crate::mnt::Mount;
 use crate::mnt::mount_options::Config;
 use crate::mnt::mount_options::check_option_conflicts;
 use crate::notify::Notifier;
-use crate::read_buf::FuseReadBuf;
+use crate::read_buf::{FuseReadBuf, BUFFER_HEADER_SLACK, DEFAULT_BUFFER_SIZE};
 use crate::reply::Reply;
 use crate::reply::ReplyRaw;
 use crate::reply::ReplySender;
@@ -279,6 +279,7 @@ impl<FS: Filesystem> Session<FS> {
         } = self;
 
         let n_threads = config.n_threads.unwrap_or(1);
+        let read_buffer_size = config.read_buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
 
         if !cfg!(target_os = "linux") && n_threads != 1 {
             // TODO: check whether it works on macOS/FreeBSD and enable if it works.
@@ -324,6 +325,7 @@ impl<FS: Filesystem> Session<FS> {
                 session_owner,
                 negotiated,
                 kernel_capabilities,
+                read_buffer_size,
             };
             threads.push(
                 thread::Builder::new()
@@ -359,7 +361,8 @@ impl<FS: Filesystem> Session<FS> {
     }
 
     fn handshake(&mut self) -> io::Result<()> {
-        let mut buf = FuseReadBuf::new();
+        let mut buf =
+            FuseReadBuf::new(self.config.read_buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE));
         let buf = buf.as_mut();
 
         loop {
@@ -455,6 +458,19 @@ impl<FS: Filesystem> Session<FS> {
                 return Err(error);
             }
 
+            // Ensure the negotiated max_write fits in the receive buffer we read requests
+            // into, so the kernel can never send a write larger than that buffer. A smaller
+            // `read_buffer_size` therefore caps max_write rather than risking truncation.
+            let buffer_size = self.config.read_buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+            let max_write_ceiling = buffer_size.saturating_sub(BUFFER_HEADER_SLACK) as u32;
+            if config.max_write > max_write_ceiling {
+                warn!(
+                    "clamping negotiated max_write {} to {} to fit read_buffer_size {}",
+                    config.max_write, max_write_ceiling, buffer_size
+                );
+                config.max_write = max_write_ceiling;
+            }
+
             // Remember the ABI version supported by kernel and mark the session initialized.
             self.proto_version = Some(v);
             self.negotiated = init.capabilities() & config.requested;
@@ -548,13 +564,15 @@ pub(crate) struct SessionEventLoop<FS: Filesystem> {
     pub(crate) session_owner: Uid,
     pub(crate) negotiated: InitFlags,
     pub(crate) kernel_capabilities: InitFlags,
+    /// Size of this thread's receive buffer, in bytes.
+    pub(crate) read_buffer_size: usize,
 }
 
 impl<FS: Filesystem> SessionEventLoop<FS> {
     fn event_loop(&self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
-        let mut buf = FuseReadBuf::new();
+        let mut buf = FuseReadBuf::new(self.read_buffer_size);
         let buf = buf.as_mut();
         loop {
             // Read the next request from the given channel to kernel driver
