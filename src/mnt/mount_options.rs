@@ -18,6 +18,14 @@ pub struct Config {
     /// This enables more efficient request processing
     /// when multiple threads are used. Requires Linux 4.5+.
     pub clone_fd: bool,
+    /// Size in bytes of the per-event-loop-thread buffer used to receive requests from the
+    /// kernel. Each thread holds one such buffer for the lifetime of the session, so this
+    /// bounds steady-state memory at roughly `n_threads * read_buffer_size`. It must be large
+    /// enough to hold the largest write the kernel may send: a filesystem that negotiates a
+    /// larger `max_write` in `init` has that value clamped down to fit this buffer. When
+    /// `None`, defaults to the maximum supported write size (16 MiB) plus a page, preserving
+    /// prior behavior.
+    pub read_buffer_size: Option<usize>,
 }
 
 /// Mount options accepted by the FUSE filesystem type
