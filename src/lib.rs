@@ -330,6 +330,31 @@ impl KernelConfig {
         self.capabilities & !InitFlags::FUSE_INIT_EXT
     }
 
+    /// Query the capabilities that will be requested in the INIT response.
+    pub fn requested_capabilities(&self) -> InitFlags {
+        self.requested
+    }
+
+    /// Query the capabilities that will be negotiated with the kernel.
+    pub fn negotiated_capabilities(&self) -> InitFlags {
+        self.requested & self.capabilities()
+    }
+
+    /// Query the configured maximum readahead size.
+    pub fn max_readahead(&self) -> u32 {
+        self.max_readahead
+    }
+
+    /// Query the maximum readahead size offered by the kernel.
+    pub fn max_readahead_limit(&self) -> u32 {
+        self.max_max_readahead
+    }
+
+    /// Query the configured maximum write size.
+    pub fn max_write(&self) -> u32 {
+        self.max_write
+    }
+
     /// Kernel ABI version.
     pub fn kernel_abi(&self) -> Version {
         self.kernel_abi
@@ -385,7 +410,8 @@ impl KernelConfig {
         }
     }
 
-    fn max_pages(&self) -> u16 {
+    /// Query the maximum number of request pages advertised in the INIT response.
+    pub fn max_pages(&self) -> u16 {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
     }
 }
@@ -1071,4 +1097,46 @@ pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     options: &Config,
 ) -> io::Result<BackgroundSession> {
     Session::new(filesystem, mountpoint.as_ref(), options).and_then(session::Session::spawn)
+}
+
+#[cfg(test)]
+mod kernel_config_tests {
+    use super::*;
+
+    #[test]
+    fn exposes_defaults_and_effective_init_configuration() {
+        let capabilities = InitFlags::FUSE_ASYNC_READ
+            | InitFlags::FUSE_BIG_WRITES
+            | InitFlags::FUSE_MAX_PAGES
+            | InitFlags::FUSE_PARALLEL_DIROPS;
+        let mut config = KernelConfig::new(capabilities, 128 * 1024, Version(7, 31));
+
+        assert_eq!(config.capabilities(), capabilities);
+        assert_eq!(
+            config.requested_capabilities(),
+            InitFlags::FUSE_ASYNC_READ | InitFlags::FUSE_BIG_WRITES | InitFlags::FUSE_MAX_PAGES
+        );
+        assert_eq!(config.max_readahead(), 128 * 1024);
+        assert_eq!(config.max_readahead_limit(), 128 * 1024);
+
+        config
+            .add_capabilities(InitFlags::FUSE_PARALLEL_DIROPS)
+            .unwrap();
+        config.set_max_readahead(64 * 1024).unwrap();
+        config.set_max_write(2 * 1024 * 1024).unwrap();
+
+        assert!(
+            config
+                .requested_capabilities()
+                .contains(InitFlags::FUSE_PARALLEL_DIROPS)
+        );
+        assert_eq!(config.negotiated_capabilities(), capabilities);
+        assert_eq!(config.max_readahead(), 64 * 1024);
+        assert_eq!(config.max_readahead_limit(), 128 * 1024);
+        assert_eq!(config.max_write(), 2 * 1024 * 1024);
+        assert_eq!(
+            usize::from(config.max_pages()) * page_size::get(),
+            2 * 1024 * 1024
+        );
+    }
 }
