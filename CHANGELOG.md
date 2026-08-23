@@ -1,5 +1,9 @@
 # FUSE for Rust - Changelog
 
+## Unreleased
+* Add read-only `KernelConfig` accessors for the requested and negotiated INIT capabilities and
+  request limits, and log the complete post-clamp INIT response at info level
+
 ## 0.18.0 - 2026-07-22
 * Remove deprecated feature flags `abi-*`
 * Rename `mount2()` to `mount()`

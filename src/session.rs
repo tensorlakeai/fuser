@@ -43,7 +43,7 @@ use crate::mnt::Mount;
 use crate::mnt::mount_options::Config;
 use crate::mnt::mount_options::check_option_conflicts;
 use crate::notify::Notifier;
-use crate::read_buf::{FuseReadBuf, BUFFER_HEADER_SLACK, DEFAULT_BUFFER_SIZE};
+use crate::read_buf::{BUFFER_HEADER_SLACK, DEFAULT_BUFFER_SIZE, FuseReadBuf};
 use crate::reply::Reply;
 use crate::reply::ReplyRaw;
 use crate::reply::ReplySender;
@@ -335,8 +335,7 @@ impl<FS: Filesystem> Session<FS> {
     }
 
     fn handshake(&mut self) -> io::Result<()> {
-        let mut buf =
-            FuseReadBuf::new(self.config.read_buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE));
+        let mut buf = FuseReadBuf::new(self.config.read_buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE));
         let buf = buf.as_mut();
 
         loop {
@@ -475,14 +474,35 @@ impl<FS: Filesystem> Session<FS> {
                 }
             }
 
-            // Reply with our desired version and settings.
-            debug!(
-                "INIT response: ABI {}.{}, flags {:#x}, max readahead {}, max write {}",
+            // This is the authoritative, post-filesystem and post-buffer-clamp INIT response.
+            // Keep every throughput- and concurrency-relevant field on one line so mount
+            // diagnostics do not have to reconstruct fuser defaults from daemon-side logs.
+            let response_flags =
+                config.negotiated_capabilities() | (InitFlags::FUSE_INIT_EXT & init.capabilities());
+            let max_pages = config.max_pages();
+            let max_stack_depth = if response_flags.contains(InitFlags::FUSE_PASSTHROUGH) {
+                config.max_stack_depth
+            } else {
+                0
+            };
+            info!(
+                "INIT response: kernel ABI {}, daemon ABI {}.{}, kernel flags {:#018x}, requested flags {:#018x}, response flags {:#018x}, kernel max readahead {}, max readahead {}, max write {}, max pages {}, implied max read {}, max background {}, congestion threshold {}, time granularity {}ns, max stack depth {}, read buffer {}",
+                v,
                 abi::FUSE_KERNEL_VERSION,
                 abi::FUSE_KERNEL_MINOR_VERSION,
-                init.capabilities() & config.requested,
+                init.capabilities().bits(),
+                config.requested.bits(),
+                response_flags.bits(),
+                init.max_readahead(),
                 config.max_readahead,
-                config.max_write
+                config.max_write,
+                max_pages,
+                usize::from(max_pages).saturating_mul(page_size::get()),
+                config.max_background,
+                config.congestion_threshold(),
+                config.time_gran.as_nanos(),
+                max_stack_depth,
+                buffer_size
             );
 
             let response = init.reply(&config);
